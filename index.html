@@ -52,6 +52,8 @@ body.noi #out{pointer-events:none}
     <div class="row wide"><label>Mode</label><select id="mode">
       <option value="flow">Flow field (vectors)</option>
       <option value="hydro">Hydrograph painting (time series)</option>
+      <option value="terrain">Depth contours (animated DTM)</option>
+      <option value="trace">Trace lines (streamlines)</option>
     </select></div>
     <div id="flowData">
       <div class="row wide"><label>Live field</label><select id="liveField">
@@ -92,6 +94,12 @@ body.noi #out{pointer-events:none}
       <div class="btns"><button id="loadHydro">Load live series</button></div>
       <div class="note">Or a CSV: first column time, then one numeric column per series (e.g. stage/flow per node from Flood Modeller results).</div>
       <div class="row wide"><label>CSV</label><input type="file" id="fileTS" accept=".csv,.txt"></div>
+    </div>
+    <div class="btns" id="traceBtns" hidden><button class="pri" id="traceRegen">Regenerate trace lines</button></div>
+    <div id="terrainData" hidden>
+      <div class="note">Load a DTM / bathymetry grid (ESRI ASCII .asc) or a greyscale raster image (luminance = height). Contours, gradients and colour animate from the depth curves.</div>
+      <div class="row wide"><label>DTM file</label><input type="file" id="fileDtm" accept=".asc,.txt,image/*"></div>
+      <div class="btns"><button class="pri" id="loadDtm">Build contours from file</button><button id="synthDtm">Demo terrain</button></div>
     </div>
     <div class="row wide"><label>Backdrop</label><input type="file" id="fileBg" accept="image/*"></div>
     <div id="bgRows"></div>
@@ -166,6 +174,8 @@ const S={
   particles:9000,width:1.2,dot:0,alpha:0.9,trail:0.94,life:120,
   speed:1,timeRate:1,lineGrow:0.3,relief:0,rx:0,ry:0,rz:0,autoRot:0,zoom:1,persp:1.5,
   rows:260,amp:0.12,rowMode:'lag',lagDays:0.06,smoothC:12,winDays:365,winStart:0.93,smooth:3,gapThr:0.55,gapAmt:0.35,striation:0.4,overlap:1.7,jitter:0.05,margin:0.14,segs:420,motion:'paint',log:true,loop:false,mapShape:0,mapColour:1,mapGap:1,
+  tLines:14000,tOrigin:'centre',tSeedR:0.12,tOut:0.12,tLen:320,tStep:1.6,tGrow:4,tWidth:0.7,tAlpha:0.2,tBlend:'multiply',tColour:'direction',tJitter:0.04,tFollow:0.35,tTurb:0.9,tTurbScale:1,tSpread:0.5,tLenSpeed:0.4,tLoop:false,
+  cBands:36,cSpeed:1,cWarp:0.35,cWarpScale:1,cLine:1.2,cIndex:5,cLineCol:'dark',cStep:0.07,cGrad:0.8,cRepeat:1.5,cDrift:1,cShade:0.5,cDark:0.3,cSmooth:6,cInvert:false,cCell:3,
   ascii:false,asciiCell:14,asciiRamp:' .:-=+*#%@',asciiColour:'ramp',asciiSolid:'#7fa0d8',asciiThresh:0.04,asciiSrc:'ramp',
   text:[{on:true,str:'The art of\nwater movement',size:110,weight:300,track:-1,lead:1.0,col:'#ffffff',x:6,y:72,align:'left',kern:true},
         {on:true,str:'Flood Modeller',size:34,weight:600,track:2,lead:1.2,col:'#9fd8ff',x:6,y:90,align:'left',kern:true}],
@@ -198,7 +208,7 @@ const RAMPS={
  mind:['#473b7b','#3584a7','#30d2be'],morning:['#ff5f6d','#ffc371'],vice:['#5ee7df','#b490ca'],
  passion:['#f43b47','#453a94'],fruit:['#ff4e50','#f9d423'],instagram:['#833ab4','#fd1d1d','#fcb045'],
  retro:['#3f51b1','#5a55ae','#7b5fac','#8f6aae','#a86aa4','#cc6b8e','#f18271','#f3a469','#f7c978'],
- summer:['#fdbb2d','#22c1c3'],rainbow:'hsv',custom:'custom'
+ summer:['#fdbb2d','#22c1c3'],'pastel wheel':['#d9a6b0','#e6c4a0','#d9dc9e','#a3ccb6','#8db1cc','#b7a2cb','#d9a6b0'],rainbow:'hsv',custom:'custom'
 };
 const hex=h=>{h=h.replace('#','');return[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]};
 let LUT=[],LUTs=[];
@@ -265,6 +275,42 @@ function buildUI(){
  ctl(L,'Colour jitter','jitter','range',{min:0,max:0.3,step:0.005});
  ctl(L,'Margin','margin','range',{min:0,max:0.4,step:0.005});
  ctl(L,'Detail (segments)','segs','range',{min:60,max:1200,step:10});
+ const ht=document.createElement('div');ht.className='note';ht.textContent='Trace lines (streamlines through the loaded field)';L.appendChild(ht);
+ ctl(L,'Line count','tLines','range',{min:1000,max:60000,step:500});
+ ctl(L,'Start from','tOrigin','select',{opts:['centre','scattered']});
+ ctl(L,'Seed radius','tSeedR','range',{min:0.005,max:0.6,step:0.005});
+ ctl(L,'Outward push','tOut','range',{min:0,max:1,step:0.01});
+ ctl(L,'Line length (steps)','tLen','range',{min:20,max:1500,step:10});
+ ctl(L,'Step size','tStep','range',{min:0.4,max:8,step:0.1});
+ ctl(L,'Growth speed','tGrow','range',{min:1,max:30,step:1});
+ ctl(L,'Trace width','tWidth','range',{min:0.1,max:6,step:0.05});
+ ctl(L,'Trace opacity','tAlpha','range',{min:0.02,max:1,step:0.01});
+ ctl(L,'Blend','tBlend','select',{opts:['normal','multiply','lighter']});
+ ctl(L,'Trace colour by','tColour','select',{opts:['direction','speed','age','position']});
+ ctl(L,'Colour jitter ','tJitter','range',{min:0,max:0.5,step:0.005});
+ ctl(L,'Field follow (stiffness)','tFollow','range',{min:0.02,max:1,step:0.01});
+ ctl(L,'Turbulence','tTurb','range',{min:0,max:3,step:0.05});
+ ctl(L,'Turbulence scale','tTurbScale','range',{min:0.1,max:6,step:0.05});
+ ctl(L,'Fibre spread','tSpread','range',{min:0,max:1,step:0.01});
+ ctl(L,'Step length by speed','tLenSpeed','range',{min:0,max:1,step:0.01});
+ ctl(L,'Regrow in a loop','tLoop','check');
+ const hc=document.createElement('div');hc.className='note';hc.textContent='Depth contours (animated DTM)';L.appendChild(hc);
+ ctl(L,'Contour bands','cBands','range',{min:4,max:140,step:1});
+ ctl(L,'Level flow speed','cSpeed','range',{min:0,max:5,step:0.05});
+ ctl(L,'Warp / distortion','cWarp','range',{min:0,max:1.5,step:0.01});
+ ctl(L,'Warp scale','cWarpScale','range',{min:0.2,max:4,step:0.05});
+ ctl(L,'Contour line weight','cLine','range',{min:0,max:8,step:0.1});
+ ctl(L,'Index line every n','cIndex','range',{min:0,max:20,step:1});
+ ctl(L,'Line colour','cLineCol','select',{opts:['dark','light','ramp']});
+ ctl(L,'Palette repeat','cRepeat','range',{min:0.1,max:8,step:0.05});
+ ctl(L,'Colour step per band','cStep','range',{min:0,max:0.5,step:0.005});
+ ctl(L,'Gradient within band','cGrad','range',{min:0,max:3,step:0.02});
+ ctl(L,'Colour drift','cDrift','range',{min:-5,max:5,step:0.05});
+ ctl(L,'Relief shading','cShade','range',{min:0,max:1,step:0.01});
+ ctl(L,'Depth darkening','cDark','range',{min:0,max:1,step:0.01});
+ ctl(L,'Terrain smoothing','cSmooth','range',{min:0,max:40,step:1,on:smoothTerrain});
+ ctl(L,'Invert depth','cInvert','check');
+ ctl(L,'Render detail (px/cell)','cCell','range',{min:1,max:8,step:0.5});
  const M=$('motionRows');
  ctl(M,'Flow speed','speed','range',{min:0,max:5,step:0.05});
  ctl(M,'Data time rate','timeRate','range',{min:0,max:20,step:0.1});
@@ -309,7 +355,7 @@ function setField(f,prov){
  mags.sort((a,b)=>a-b);f.max=mags.length?mags[Math.floor(mags.length*0.98)]||mags[mags.length-1]:1;if(!f.max)f.max=1;
  validCells=[];for(let i=0;i<f.mask.length;i++)if(f.mask[i])validCells.push(i);
  if(!validCells.length)for(let i=0;i<f.mask.length;i++)validCells.push(i);
- tIdx=0;provenance=prov;$('stSrc').textContent=prov;initParticles();clearScene();
+ tIdx=0;provenance=prov;$('stSrc').textContent=prov;initParticles();traceReset();clearScene();
 }
 let tIdx=0;
 function sample(x,y){ // x,y in 0..1 → [u,v] (screen: v positive downward)
@@ -496,6 +542,113 @@ function stepFlow(dt){
  sctx.globalAlpha=1;
  if(cnt){metric.speed=ssum/cnt;metric.turb=1-Math.hypot(cs,sn)/cnt}
 }
+// ---------------- trace lines (streamlines through the real vector field) ----------------
+let TR=null,trHold=0;
+function traceReset(){TR=null;trHold=0;if(S.mode==='trace')sctx.clearRect(0,0,W,H)}
+function traceSeed(i){
+ for(let tr=0;tr<12;tr++){let x,y;
+  if(S.tOrigin==='centre'){const R=S.tSeedR,a=Math.random()*6.2832,r=R*Math.sqrt(Math.random());x=TR.cx+Math.cos(a)*r*H/fit.dw;y=TR.cy+Math.sin(a)*r*H/fit.dh}
+  else if(V.z>1.05&&flat()){const[x0,x1,y0,y1]=visRect();x=x0+(x1-x0)*Math.random();y=y0+(y1-y0)*Math.random()}
+  else{const c=validCells[(Math.random()*validCells.length)|0];x=((c%F.gw)+Math.random())/(F.gw-1);y=(Math.floor(c/F.gw)+Math.random())/(F.gh-1)}
+  const v=sample(x,y);if(!v)continue;const m=Math.hypot(v[0],v[1]);if(m<F.max*0.003)continue;
+  let sg=i%2?1:-1;
+  if(S.tOrigin==='centre'){const rx=(x-TR.cx)*fit.dw,ry=(y-TR.cy)*fit.dh,d=v[0]*rx+v[1]*ry;if(Math.abs(d)>1e-9)sg=d>0?1:-1}
+  TR.x[i]=x;TR.y[i]=y;TR.sg[i]=sg;TR.hx[i]=sg*v[0]/m;TR.hy[i]=sg*v[1]/m;TR.age[i]=0;TR.ph[i]=Math.random();TR.w[i]=Math.random()<0.12?1:0;TR.on[i]=1;return true}
+ TR.on[i]=0;return false}
+function traceInit(){
+ const n=S.tLines;computeFit(F.aspect);const[vx0,vx1,vy0,vy1]=visRect();
+ TR={cx:(vx0+vx1)/2,cy:(vy0+vy1)/2,x:new Float32Array(n),y:new Float32Array(n),hx:new Float32Array(n),hy:new Float32Array(n),sg:new Int8Array(n),age:new Uint16Array(n),ph:new Float32Array(n),w:new Uint8Array(n),on:new Uint8Array(n),alive:0};
+ for(let i=0;i<n;i++)if(traceSeed(i))TR.alive++}
+function stepTrace(dt){
+ if(!F)return;computeFit(F.aspect);if(!TR)traceInit();
+ const nf=F.frames.length;if(nf>1&&TR.alive>0){tIdx+=dt*S.timeRate*S.speed*0.5;if(tIdx>=nf-1)tIdx=0}
+ $('stTime').textContent=F.frames[Math.floor(tIdx)%nf].t;
+ if(TR.alive<=0){trHold+=dt;if(S.tLoop&&trHold>2)traceReset();return}
+ const sub=Math.max(1,S.tGrow|0),N=TR.x.length,a=[0,0],pts=new Float32Array((sub+1)*2),mx=F.max,base=S.tStep*H/1080/V.z,
+  tk=S.tFollow,ts=S.tTurbScale*6,spread=S.tSpread*40,col=S.tColour,lenSp=S.tLenSpeed,L=S.tLen;
+ const paths=[Array.from({length:BINS},()=>new Path2D()),Array.from({length:BINS},()=>new Path2D())];let ssum=0,cnt=0;
+ for(let i=0;i<N;i++){if(!TR.on[i])continue;
+  let x=TR.x[i],y=TR.y[i],hx=TR.hx[i],hy=TR.hy[i],age=TR.age[i],np=0,u0=0,lastz=0,dead=false;const ph=TR.ph[i]*spread,sg=TR.sg[i];
+  for(let s=0;s<sub;s++){
+   const vel=sample(x,y);if(!vel||age>=L){dead=true;break}
+   const m=Math.hypot(vel[0],vel[1]);if(m<mx*0.003){dead=true;break}
+   const mn=Math.min(1,m/mx);
+   hx=hx*(1-tk)+sg*vel[0]/m*tk;hy=hy*(1-tk)+sg*vel[1]/m*tk;
+   if(S.tOut>0){const rx=(x-TR.cx)*fit.dw,ry=(y-TR.cy)*fit.dh,rl=Math.hypot(rx,ry);if(rl>1e-6){hx+=rx/rl*S.tOut;hy+=ry/rl*S.tOut}}
+   const hl=Math.hypot(hx,hy)||1;hx/=hl;hy/=hl;
+   const th=S.tTurb*(noise(x*ts+ph,y*ts)+noise(y*ts*1.3-ph,x*ts*0.7+age*0.02))*0.5,cs=Math.cos(th),sn=Math.sin(th),dx=hx*cs-hy*sn,dy=hx*sn+hy*cs;
+   if(!proj(x,y,mn,a)){dead=true;break}
+   pts[np*2]=a[0];pts[np*2+1]=a[1];np++;lastz=mn;
+   if(s===0){u0=col==='direction'?(Math.atan2(dy,dx)/Math.PI+1)/2:col==='speed'?mn:col==='age'?age/L:(x+y)/2;ssum+=mn;cnt++}
+   const len=base*(1-lenSp+lenSp*mn);x+=dx*len/fit.dw;y+=dy*len/fit.dh;age++}
+  if(!dead&&proj(x,y,lastz,a)){pts[np*2]=a[0];pts[np*2+1]=a[1];np++}
+  if(np>1){const u=Math.max(0,Math.min(0.9999,u0+(hash(i,3.7)-0.5)*S.tJitter)),p=paths[TR.w[i]][(u*BINS)|0];p.moveTo(pts[0],pts[1]);for(let q=1;q<np;q++)p.lineTo(pts[q*2],pts[q*2+1])}
+  TR.x[i]=x;TR.y[i]=y;TR.hx[i]=hx;TR.hy[i]=hy;TR.age[i]=age;
+  if(dead){TR.on[i]=0;TR.alive--}}
+ sctx.globalCompositeOperation=S.tBlend==='normal'?'source-over':S.tBlend;sctx.lineCap='butt';sctx.lineJoin='round';
+ for(let c=0;c<2;c++){sctx.lineWidth=S.tWidth*(c?2:1)*H/1080*Math.pow(V.z,S.lineGrow);sctx.globalAlpha=Math.min(1,S.tAlpha*(c?1.3:1));
+  for(let q=0;q<BINS;q++){sctx.strokeStyle=LUTs[Math.round((q+0.5)/BINS*255)];sctx.stroke(paths[c][q])}}
+ sctx.globalAlpha=1;sctx.globalCompositeOperation='source-over';
+ if(cnt)metric.speed=ssum/cnt;
+}
+
+// ---------------- depth contours (animated DTM) ----------------
+let T=null,ctime=0,tImg=null,tPh=null;const tc=document.createElement('canvas'),tctx=tc.getContext('2d');
+function setTerrain(g,prov,short,real){
+ const d=g.data,v=[],st=Math.max(1,Math.floor(d.length/20000));
+ for(let i=0;i<d.length;i+=st)if(!isNaN(d[i]))v.push(d[i]);
+ if(!v.length)throw new Error('Grid has no valid cells');
+ v.sort((a,b)=>a-b);const lo=v[Math.floor(v.length*0.01)],hi=v[Math.min(v.length-1,Math.floor(v.length*0.99))],r=(hi-lo)||1;
+ const h=new Float32Array(d.length);for(let i=0;i<d.length;i++)h[i]=isNaN(d[i])?0:Math.max(0,Math.min(1,(d[i]-lo)/r));
+ T={nc:g.nc,nr:g.nr,h,s:h,aspect:g.nc/g.nr};smoothTerrain();
+ provenance=prov;provenanceShort=short||'';$('stSrc').textContent=prov;$('stSrc').className=real?'':'warn';
+}
+function smoothTerrain(){if(!T)return;const{nc,nr}=T;let a=T.h;
+ for(let p=0;p<S.cSmooth;p++){const b=new Float32Array(a.length),c=new Float32Array(a.length);
+  for(let j=0;j<nr;j++)for(let i=0;i<nc;i++){const k=j*nc+i;b[k]=(a[j*nc+Math.max(0,i-1)]+a[k]+a[j*nc+Math.min(nc-1,i+1)])/3}
+  for(let j=0;j<nr;j++)for(let i=0;i<nc;i++){c[j*nc+i]=(b[Math.max(0,j-1)*nc+i]+b[j*nc+i]+b[Math.min(nr-1,j+1)*nc+i])/3}
+  a=c}
+ T.s=a}
+function synthTerrain(){const nc=240,nr=135,d=new Float32Array(nc*nr),g=(x,y,cx,cy,s)=>Math.exp(-((x-cx)**2+(y-cy)**2)/s);
+ for(let j=0;j<nr;j++)for(let i=0;i<nc;i++){const x=i/(nc-1),y=j/(nr-1);
+  d[j*nc+i]=0.55*g(x,y,.3,.4,.05)+0.45*g(x,y,.75,.65,.04)+0.3*g(x,y,.6,.2,.02)+0.07*Math.sin(x*9+Math.sin(y*5)*1.5)+0.05*Math.sin(y*13+x*3)
+   -0.3*Math.exp(-((y-(0.5+0.18*Math.sin(x*6)))**2)/0.004)}
+ setTerrain({nc,nr,data:d},'Demo terrain — NOT real data, do not use for hero output','',false)}
+async function loadDtm(){
+ const f=$('fileDtm').files[0];if(!f){status('Choose a DTM file first',true);return}
+ try{status('Parsing '+f.name+'…');let g;
+  if(f.type.startsWith('image/')){const img=await loadImage(f),gw=Math.min(800,img.width),gh=Math.round(gw*img.height/img.width),c=document.createElement('canvas');c.width=gw;c.height=gh;
+   const x=c.getContext('2d');x.drawImage(img,0,0,gw,gh);const px=x.getImageData(0,0,gw,gh).data,z=new Float32Array(gw*gh);
+   for(let i=0;i<z.length;i++)z[i]=(px[i*4]*.3+px[i*4+1]*.59+px[i*4+2]*.11)/255;
+   setTerrain({nc:gw,nr:gh,data:z},`Image-derived heights · ${f.name} (only real data if the image is a real raster)`,'Data: '+f.name,false)}
+  else{g=down(parseASC(await readText(f)),800);setTerrain(g,`DTM · ${f.name} · ${g.nc}×${g.nr}`,'Data: '+f.name.replace(/\.[^.]+$/,''),true)}
+  status('')}catch(e){status('Could not read file: '+e.message,true)}}
+function stepTerrain(dt){
+ if(!T)synthTerrain();
+ ctime+=dt*S.cSpeed;computeFit(T.aspect);
+ const cell=Math.max(1,S.cCell*H/1080),rw=Math.max(8,Math.round(W/cell)),rh=Math.max(8,Math.round(H/cell));
+ if(tc.width!==rw||tc.height!==rh){tc.width=rw;tc.height=rh;tImg=tctx.createImageData(rw,rh);tPh=new Float32Array(rw*rh)}
+ const hs=T.s,nc=T.nc,nr=T.nr,sx=fit.dw*S.zoom,sy=fit.dh*S.zoom,B=S.cBands,wp=S.cWarp*0.12,wsc=S.cWarpScale,t=ctime,px=W/rw,py=H/rh,inv=S.cInvert;
+ for(let j=0;j<rh;j++){const y=(((j+0.5)*py-H/2)/V.z+V.cy-H/2)/sy+0.5,gy=Math.max(0,Math.min(nr-1.001,y*(nr-1))),j0=gy|0,fy=gy-j0;
+  for(let i=0;i<rw;i++){const x=(((i+0.5)*px-W/2)/V.z+V.cx-W/2)/sx+0.5,gx=Math.max(0,Math.min(nc-1.001,x*(nc-1))),i0=gx|0,fx=gx-i0,k=j0*nc+i0;
+   let h=(hs[k]*(1-fx)+hs[k+1]*fx)*(1-fy)+(hs[k+nc]*(1-fx)+hs[k+nc+1]*fx)*fy;
+   if(inv)h=1-h;
+   const wob=Math.sin(x*wsc*7+t*0.6+Math.sin(y*wsc*5-t*0.4)*1.6)+Math.sin(y*wsc*9-t*0.5+Math.sin(x*wsc*4+t*0.3)*1.3);
+   tPh[j*rw+i]=(h+wp*wob)*B-t*0.8}}
+ const d=tImg.data,lw=S.cLine*H/1080/cell,rep=S.cRepeat,stp=S.cStep,grd=S.cGrad,drift=t*S.cDrift*0.05,shade=S.cShade*0.6,dk=S.cDark,idx=S.cIndex|0,lm=S.cLineCol,bg=hex(S.bg);
+ for(let j=0;j<rh;j++)for(let i=0;i<rw;i++){const k=j*rw+i,ph=tPh[k],band=Math.floor(ph),f=ph-band;
+  const gxp=(tPh[j*rw+Math.min(rw-1,i+1)]-tPh[j*rw+Math.max(0,i-1)])/2,gyp=(tPh[Math.min(rh-1,j+1)*rw+i]-tPh[Math.max(0,j-1)*rw+i])/2,gm=Math.hypot(gxp,gyp);
+  let u=(ph/B)*rep+band*stp+f*grd+drift;u-=Math.floor(u);u=1-Math.abs(2*u-1);
+  const ci=Math.min(255,(u*255)|0),c=LUT[ci];let r=c[0],g=c[1],b=c[2];
+  const n=f<0.5?band:band+1;
+  if(lw>0){const w=lw*(idx&&n%idx===0?2:1),dd=Math.min(f,1-f)/Math.max(gm,1e-4),a=Math.max(0,Math.min(1,w*0.5+0.5-dd));
+   if(a>0){let lr,lg,lb;if(lm==='dark'){lr=bg[0]*0.5;lg=bg[1]*0.5;lb=bg[2]*0.5}else if(lm==='light'){lr=lg=lb=245}else{const q=LUT[255-ci];lr=q[0];lg=q[1];lb=q[2]}
+    r+=(lr-r)*a;g+=(lg-g)*a;b+=(lb-b)*a}}
+  const s=1+shade*((-gxp-gyp)/(gm+1e-4))*Math.min(1,gm*3)*0.7071,depth=1-dk*(1-Math.max(0,Math.min(1,(ph+t*0.8)/B))),m=Math.max(0,s)*depth,o=k*4;
+  d[o]=Math.min(255,r*m);d[o+1]=Math.min(255,g*m);d[o+2]=Math.min(255,b*m);d[o+3]=255}
+ tctx.putImageData(tImg,0,0);sctx.imageSmoothingEnabled=true;sctx.imageSmoothingQuality='high';sctx.drawImage(tc,0,0,W,H);
+ metric.speed=Math.min(1,0.15+S.cSpeed*0.15+S.cWarp*0.3);$('stTime').textContent=`${B} depth bands · animated DTM`;
+}
 const noise=(x,s)=>Math.sin(x*1.7+s)*0.5+Math.sin(x*3.1+s*2.3)*0.3+Math.sin(x*7.3+s*0.7)*0.2;
 const hash=(a,b)=>{const h=Math.sin(a*127.1+b*311.7)*43758.5453;return h-Math.floor(h)};
 let stCol=0,stHold=0,stScroll=0,stTime=0;
@@ -581,9 +734,9 @@ function composite(transparent){
  drawText();
 }
 let last=performance.now(),fpsA=0,fc=0;
-function loop(now){const dt=Math.min(0.1,(now-last)/1000);last=now;
+function loop(now){const dt=Math.max(0,Math.min(0.1,(now-last)/1000));last=now;
  if(!paused){rot.ry+=S.autoRot*dt*Math.PI/180;rot.rx=S.rx*Math.PI/180;rot.rz=S.rz*Math.PI/180;const ry=S.ry*Math.PI/180+(rot._auto=(rot._auto||0)+S.autoRot*dt*Math.PI/180);rot.ry=ry;
-  if(S.mode==='flow')stepFlow(dt);else stepHydro(dt);if(S.ascii)txtPos+=Math.max(1,Math.floor(dt*20))}
+  if(S.mode==='flow')stepFlow(dt);else if(S.mode==='terrain')stepTerrain(dt);else if(S.mode==='trace')stepTrace(dt);else stepHydro(dt);if(S.ascii)txtPos+=Math.max(1,Math.floor(dt*20))}
  composite(false);updateSound();
  fpsA+=dt;fc++;if(fpsA>1){$('stFps').textContent=Math.round(fc/fpsA)+' fps · '+W+'×'+H;fpsA=0;fc=0}
  requestAnimationFrame(loop)}
@@ -629,6 +782,13 @@ const PRESETS={
  'ASCII model file':{ramp:'vice',bg:'#0d1117',particles:8000,width:2.5,trail:0.9,ascii:true,asciiCell:14,asciiColour:'ramp',asciiRamp:' .:-=+*#%@'},
  'Strata · Thames 2013/14 floods':{mode:'hydro',ramp:'ultraviolet',bg:'#f3f0ea',winStart:0.93,stampCol:'#555555',alpha:0.95,t0:{str:'The art of water movement',size:46,weight:400,track:1,col:'#3b3b3b',x:14,y:8.5},t1:{str:'Thames at Kingston · water year 2013/14',size:22,weight:400,track:2,col:'#6b6b6b',x:14,y:93}},
  'Strata · 15 years stacked':{mode:'hydro',lagDays:0.8,amp:0.5,t0:{size:72,y:12,x:5},t1:{y:16,x:5},ramp:'turbo',bg:'#07090d',rowMode:'years',rows:330,amp:0.5,overlap:1.4,mapColour:0,gapThr:0.6,gapAmt:0.4,margin:0.08,striation:0.3,alpha:0.9},
+ 'Trace · Pastel fibres':{mode:'trace',ramp:'pastel wheel',bg:'#f6f4f0',tBlend:'multiply',tAlpha:0.2,tWidth:0.8,tLines:22000,tLen:620,tTurb:1.2,tSpread:0.7,stampCol:'#555555',t0:{col:'#3b3b3b'},t1:{col:'#6b6b6b'}},
+ 'Trace · Dark filaments':{mode:'trace',ramp:'ultraviolet',bg:'#03060c',tBlend:'lighter',tAlpha:0.12,tWidth:0.6,tLines:20000,tLen:400,tTurb:0.6,tSpread:0.35,tColour:'speed',tLenSpeed:0.7},
+ 'Trace · Clean streamlines':{mode:'trace',ramp:'deep water',bg:'#020812',tBlend:'normal',tAlpha:0.6,tWidth:0.9,tLines:5000,tLen:500,tTurb:0,tSpread:0,tColour:'speed',tFollow:1,tLenSpeed:0},
+ 'Contours · Abyssal bloom':{mode:'terrain',ramp:'deep water',bg:'#020812',cBands:42,cStep:0.05,cGrad:0.9,cRepeat:1.2,cWarp:0.45,cLine:0.9,cShade:0.55,cDark:0.35,cDrift:0.6,t0:{size:96,y:76},t1:{y:91}},
+ 'Contours · Neon thermal':{mode:'terrain',ramp:'inferno',bg:'#05020a',cBands:70,cStep:0.11,cGrad:1.4,cRepeat:2.5,cWarp:0.8,cWarpScale:1.4,cLine:0.6,cLineCol:'ramp',cShade:0.3,cDark:0.15,cDrift:1.5,cSpeed:1.4},
+ 'Contours · Ultraviolet silk':{mode:'terrain',ramp:'ultraviolet',bg:'#0a0414',cBands:110,cStep:0,cGrad:0,cRepeat:3,cWarp:0.6,cLine:0,cShade:0.8,cDark:0.2,cDrift:0.4,cSmooth:12},
+ 'Contours · Ink topographic':{mode:'terrain',ramp:'ink pastel',bg:'#f3f0ea',cBands:30,cStep:0.03,cGrad:0.3,cRepeat:0.8,cWarp:0.15,cLine:1.6,cLineCol:'dark',cShade:0.35,cDark:0,cDrift:0.2,cSpeed:0.5,stampCol:'#555555',t0:{col:'#3b3b3b'},t1:{col:'#6b6b6b'}},
  'Strata · scrolling time-lapse 3D':{mode:'hydro',ramp:'deep water',bg:'#020812',motion:'scroll',rows:180,amp:0.35,segs:300,relief:0.5,rx:38,rz:-8,zoom:1.15,timeRate:2,alpha:0.9,margin:0.1}
 };
 function applyPreset(p){const t0=p.text0,t1=p.text1,tt0=p.t0,tt1=p.t1;const keep={text:JSON.parse(JSON.stringify(DEF.text)),mode:S.mode};Object.assign(S,JSON.parse(JSON.stringify(DEF)),{text:keep.text,mode:keep.mode});S.text[0].col=DEF.text[0].col;S.text[1].col=DEF.text[1].col;for(const k in p){if(k==='text0'){S.text[0].col=t0}else if(k==='text1'){S.text[1].col=t1}else if(k==='t0'){Object.assign(S.text[0],tt0)}else if(k==='t1'){Object.assign(S.text[1],tt1)}else S[k]=p[k]}
@@ -643,19 +803,20 @@ $('ramp').innerHTML=Object.keys(RAMPS).map(k=>`<option ${k===S.ramp?'selected':'
 $('ramp').onchange=e=>{S.ramp=e.target.value;buildLUT()};
 $('region').innerHTML=Object.keys(REGIONS).map(k=>`<option>${k}</option>`).join('');
 $('river').innerHTML=Object.keys(RIVERS).map(k=>`<option>${k}</option>`).join('');
-$('loadLive').onclick=loadLive;$('loadFiles').onclick=loadFiles;$('loadHydro').onclick=loadHydro;
+$('loadDtm').onclick=loadDtm;$('traceRegen').onclick=traceReset;$('synthDtm').onclick=synthTerrain;$('loadLive').onclick=loadLive;$('loadFiles').onclick=loadFiles;$('loadHydro').onclick=loadHydro;
 $('fileTS').onchange=e=>e.target.files[0]&&loadTS(e.target.files[0]);
 $('fileType').onchange=e=>$('rowB').hidden=!['uv','sd'].includes(e.target.value);
 $('fileBg').onchange=async e=>{if(e.target.files[0])bgImg=await loadImage(e.target.files[0])};
 $('fileTxt').onchange=async e=>{if(!e.target.files[0])return;modelText=(await readText(e.target.files[0])).replace(/\s+/g,' ');S.asciiSrc='model file';S.ascii=true;buildUI();status('Model file loaded: '+modelText.length+' characters')};
 $('fileFont').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const buf=await f.arrayBuffer();fontB64=b64(new Uint8Array(buf));const ff=new FontFace('BrandFont',buf,{weight:'100 900'});await ff.load();document.fonts.add(ff);brandFamily='BrandFont';status('Font loaded: '+f.name)}catch(err){status('Font failed to load',true)}};
-function setMode(m){S.mode=m;$('mode').value=m;$('flowData').hidden=m!=='flow';$('hydroData').hidden=m!=='hydro';clearScene();
- if(m==='hydro'&&!SER)loadThames();if(m==='flow')$('stSrc').textContent=provenance=F?provenance:'—'}
-$('mode').onchange=e=>{if(e.target.value==='hydro'){S.mode='hydro';applyPreset(PRESETS['Strata · Thames 2013/14 floods'])}else setMode(e.target.value)};
+function setMode(m){S.mode=m;$('mode').value=m;$('flowData').hidden=m!=='flow'&&m!=='trace';$('traceBtns').hidden=m!=='trace';$('hydroData').hidden=m!=='hydro';$('terrainData').hidden=m!=='terrain';clearScene();
+ if(m==='hydro'&&!SER)loadThames();if(m==='terrain'){if(!T)synthTerrain();else{$('stSrc').textContent=provenance;}}if(m==='flow'||m==='trace')$('stSrc').textContent=provenance=F?provenance:'—';traceReset()}
+$('mode').onchange=e=>{if(e.target.value==='hydro'){S.mode='hydro';applyPreset(PRESETS['Strata · Thames 2013/14 floods'])}else if(e.target.value==='terrain'){S.mode='terrain';applyPreset(PRESETS['Contours · Abyssal bloom'])}else if(e.target.value==='trace'){S.mode='trace';applyPreset(PRESETS['Trace · Pastel fibres'])}else setMode(e.target.value)};
 $('loadThames').onclick=loadThames;
-$('side').addEventListener('input',e=>{if(S.mode==='hydro'&&S.motion==='paint'&&!e.target.closest('#typeRows,#soundRows,#outRows'))strataReset()});
+$('side').addEventListener('input',e=>{if(S.mode==='hydro'&&S.motion==='paint'&&!e.target.closest('#typeRows,#soundRows,#outRows'))strataReset();
+ if(S.mode==='trace'&&!e.target.closest('#typeRows,#soundRows,#outRows,#asciiRows,#bgRows,#motionRows')){clearTimeout(trT);trT=setTimeout(traceReset,200)}});let trT=0;
 function setRes(v){[W,H]=v.split('x').map(Number);out.width=scene.width=W;out.height=scene.height=H;V.z=1;V.cx=W/2;V.cy=H/2;viewChanged();clearScene()}
-function viewChanged(){viewDirty=true;if(S.mode==='flow'){sctx.clearRect(0,0,W,H);if(P&&V.z>1.05)for(let i=0;i<P.x.length;i++)spawn(i,true)}$('zoomLbl').textContent=(V.z<10?V.z.toFixed(2):Math.round(V.z))+'×'}
+function viewChanged(){viewDirty=true;if(S.mode==='flow'){sctx.clearRect(0,0,W,H);if(P&&V.z>1.05)for(let i=0;i<P.x.length;i++)spawn(i,true)}else if(S.mode==='trace')traceReset();$('zoomLbl').textContent=(V.z<10?V.z.toFixed(2):Math.round(V.z))+'×'}
 function zoomAt(sx,sy,nz){nz=Math.max(1,Math.min(400,nz));if(nz<=1.0001){V.z=1;V.cx=W/2;V.cy=H/2;viewChanged();return}
  const px=(sx-W/2)/V.z+V.cx,py=(sy-H/2)/V.z+V.cy;V.z=nz;V.cx=px-(sx-W/2)/nz;V.cy=py-(sy-H/2)/nz;viewChanged()}
 const toCv=(x,y)=>{const r=out.getBoundingClientRect();return[(x-r.left)*W/r.width,(y-r.top)*H/r.height]};
@@ -679,8 +840,9 @@ const f32=a=>b64(new Uint8Array(new Float32Array(a).buffer)),fromF32=s=>new Floa
 $('htmlBtn').onclick=()=>{
  const C={S:JSON.parse(JSON.stringify(S)),W,H,V:{...V},prov:provenance,provShort:provenanceShort,responsive:$('pSize').value==='resp',
   interact:$('pInt').checked,sound:$('pSnd').checked};
- if(S.mode==='flow'&&F){C.field={gw:F.gw,gh:F.gh,aspect:F.aspect,mask:b64(F.mask),frames:F.frames.map(f=>({t:f.t,u:f32(f.u),v:f32(f.v)}))};
+ if((S.mode==='flow'||S.mode==='trace')&&F){C.field={gw:F.gw,gh:F.gh,aspect:F.aspect,mask:b64(F.mask),frames:F.frames.map(f=>({t:f.t,u:f32(f.u),v:f32(f.v)}))};
   if(liveCfg&&$('pLive').checked)C.live=liveCfg}
+ if(S.mode==='terrain'&&T)C.terrain={nc:T.nc,nr:T.nr,h:f32(T.h)};
  if(SER){if(serSrc==='thames')C.thames=true;else C.ser={t:SER.t,series:SER.series.map(s=>({name:s.name,v:s.v}))}}
  if(modelText&&S.ascii)C.modelText=modelText.slice(0,300000);
  if(bgImg){const c=document.createElement('canvas'),r=Math.min(1,3840/Math.max(bgImg.width,bgImg.height));c.width=Math.round(bgImg.width*r);c.height=Math.round(bgImg.height*r);c.getContext('2d').drawImage(bgImg,0,0,c.width,c.height);C.bg=c.toDataURL('image/jpeg',0.88)}
@@ -691,15 +853,16 @@ $('htmlBtn').onclick=()=>{
 function startPlayer(C){
  document.body.classList.add('player');if(!C.interact)document.body.classList.add('noi');
  const keepText=C.S.text;Object.assign(S,C.S);S.text=keepText;$('ramp').value=S.ramp;buildUI();buildLUT();
- document.body.style.setProperty('--pbg',S.bg);$('mode').value=S.mode;$('flowData').hidden=S.mode!=='flow';$('hydroData').hidden=S.mode!=='hydro';
+ document.body.style.setProperty('--pbg',S.bg);$('mode').value=S.mode;$('flowData').hidden=S.mode!=='flow'&&S.mode!=='trace';$('hydroData').hidden=S.mode!=='hydro';$('terrainData').hidden=S.mode!=='terrain';
  provenance=C.prov||'';provenanceShort=C.provShort||'';modelText=C.modelText||'';
  if(C.bg){const i=new Image();i.onload=()=>bgImg=i;i.src=C.bg}
  if(C.font){const ff=new FontFace('BrandFont',unb64(C.font).buffer,{weight:'100 900'});ff.load().then(()=>{document.fonts.add(ff);brandFamily='BrandFont'}).catch(()=>{})}
  const size=()=>{if(C.responsive){const d=Math.min(devicePixelRatio||1,2);let w=Math.round(innerWidth*d),h=Math.round(innerHeight*d);const m=3840/Math.max(w,h);if(m<1){w=Math.round(w*m);h=Math.round(h*m)}W=w;H=h}else{W=C.W;H=C.H}
   out.width=scene.width=W;out.height=scene.height=H;V.z=C.V.z;V.cx=C.V.cx/C.W*W;V.cy=C.V.cy/C.H*H;viewChanged();clearScene()};
  size();let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(size,200)});
- if(S.mode==='flow'){if(C.field){const fd=C.field;setField({gw:fd.gw,gh:fd.gh,aspect:fd.aspect,mask:unb64(fd.mask),frames:fd.frames.map(f=>({t:f.t,u:fromF32(f.u),v:fromF32(f.v)}))},C.prov);provenance=C.prov;provenanceShort=C.provShort}else synthField();
+ if(S.mode==='flow'||S.mode==='trace'){if(C.field){const fd=C.field;setField({gw:fd.gw,gh:fd.gh,aspect:fd.aspect,mask:unb64(fd.mask),frames:fd.frames.map(f=>({t:f.t,u:fromF32(f.u),v:fromF32(f.v)}))},C.prov);provenance=C.prov;provenanceShort=C.provShort}else synthField();
   if(C.live){$('liveField').value=C.live.kind;$('region').value=C.live.region;loadLive();setInterval(loadLive,15*60e3)}}
+ else if(S.mode==='terrain'){if(C.terrain){const tr=C.terrain;setTerrain({nc:tr.nc,nr:tr.nr,data:fromF32(tr.h)},C.prov,C.provShort,!/NOT real|Image-derived/.test(C.prov||''))}else synthTerrain();provenance=C.prov;provenanceShort=C.provShort}
  else{if(C.thames)loadThames();else if(C.ser){SER=C.ser;serSrc='embed';prepSeries()}provenance=C.prov;provenanceShort=C.provShort}
  if(C.sound){const b=document.createElement('button');b.id='sndP';b.textContent='♪ Sound off';document.body.appendChild(b);
   b.onclick=async()=>{await $('soundBtn').onclick();b.textContent='♪ Sound '+(soundOn?'on':'off')}}
